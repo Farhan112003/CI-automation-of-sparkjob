@@ -1,0 +1,233 @@
+#########################################################
+			   CI Automation of a Spark Job
+#########################################################
+
+
+############################################################
+
+---** Install Docker, Docker-compose & Jenkins **---
+#docker
+$ for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do sudo apt-get remove $pkg; done
+
+#java for jenkins
+$ sudo apt install openjdk-11-jdk -y
+
+-------------------------------------------------------------------------
+#downloading key rings for secure handshake between our repo and jenkins#
+
+$ curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee \
+  /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+
+$ echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+  https://pkg.jenkins.io/debian-stable binary/ | sudo tee \
+  /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+*thrid party repo are striped under /etc/apt/sources.list.d/*
+
+--------------------
+#Installing jenkins#
+
+$ sudo apt-get update
+
+$ sudo apt-get install jenkins -y
+
+$ sudo service jenkins status
+
+----------------------------------------------------
+#copy the public ip and connect with Jenkins web UI#
+
+>> Connect to jenkins on browser on port 8080
+
+*copy the path on web, paste on terminal and the initial admin password is visible*
+
+$ sudo cat <web_path>
+
+--------------------------------------
+>> After installing Jenkins and Docker
+
+$ sudo apt install docker-compose -y
+
+
+###########################################################
+
+---** Configure ubuntu & jenkins user to use docker **---
+*adding user to Dockers group, the users dont have to use "sudo" while firing commands*
+
+$ sudo usermod -aG docker $USER
+
+$ sudo usermod -aG docker jenkins
+
+$ sudo systemctl restart jenkins
+
+$ sudo systemctl restart docker
+
+
+#################################################################
+
+---** Install Docker & Docker Pipeline Plugin in Jenkins **---
+> Dashboard > manage jenkins > plugins > Search "Docker" > Select Docker and Docker Pipeline
+> Dashboard > manage jenkins > plugins > Select Pipeline
+
+#################################################################
+
+---** Configure github webhooks and update firewall **---
+
+>> Generate GitHub API token 
+Your account - settings - developer tools - Personal access tokens - admin:repo:hook
+
+>> Add API token in Jenkins
+Manage Jenkins -> System -> Github -> Add github server -> Give a name -> Add credentials -> Kind : secret text -> Add
+Click on Manage Hooks Checkbox
+>Test Connection
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+###########################################
+>> Create a account in Slack, its free
+> select the workspace name
+> launch
+
+-----------------------------------------
+---** Configure Slack Notifications **---
+
+>> Install Slack Notification Plugin in Jenkins
+> Dashboard > manage jenkins > plugins > Search and Select Slack
+
+>> Go under your Slack and create a channel for alerts
+
+>> Create New App in Slack
+> add apps
+    - Apps -> Add Apps -> App Directory -> Manage -> Build -> Create An APP 
+    - Click "From an app manifest"
+    - Select your workspace <workspace_name>
+    - Delete the example manifest that Slack provides
+    - Click YAML - Paste the following into the text box:
+- - - - - - - - - - - - - - - - - - - - - - -
+
+display_information:
+  name: Jenkins
+features:
+  bot_user:
+    display_name: Jenkins
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - channels:read
+      - chat:write
+      - chat:write.customize
+      - files:write
+      - reactions:write
+      - users:read
+      - users:read.email
+      - groups:read
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+
+- - - - - - - - - - - - - - - - - - - - - - -
+  	- Install App to worksapace
+  	- Copy the "Bot User OAuth Access Token"
+  	- Add the jenkins bot to alerts channel
+      - type @jenkins into the text box, the jenkins bot will be added to the channel 
+
+
+>> Configure Slack in Jenkins  
+Manage Jenkins -> System -> Slack 
+	- Credential -> Add new -> Secret text - Paste OAuth Access Token
+	- Default Channel - #alerts (exact channel name starting with #)
+	- Click on Checkbox - Custom slack app bot user
+    - test connection 
+
+
+#######################################################################################
+
+----*** Build a Full CI/CD Pipeline for Spark Job ***----
+
+>>> New Item -> Pipeline ->
+
+>> Build Triggers - GitHub hook trigger for GITScm polling (Check it)
+
+>> Pipeline -> Pipeline script from SCM
+SCM - Git
+  Repository URL (spark-job) - https://github.com/aasemquazi/spark-job.git
+
+>> Credentials - Add - Username and password (Give username and password of Github)
+
+>> Change Branch name to - */main
+
+Save
+-dont build jenkins pipeline just yet, first update the Jenkins File ine Github
+
+-----------------------------------------------------------------------------------------
+>>Now go under github and update jenkins file with below code and commit on github itself
+
+pipeline {
+    agent any
+
+    stages {
+       
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Build the Docker image from the Dockerfile
+                    sh 'docker-compose build'
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                script {
+                    // Run the container with docker-compose
+                    sh 'docker-compose up -d'
+                }
+            }
+        }
+
+        stage('Run Spark Job') {
+            steps {
+                script {
+                    // Tail the logs of the Spark job to ensure it's running
+                    sh 'docker-compose logs -f'
+                }
+            }
+        }
+    }
+
+    post {
+    	success {
+            script {
+                // Notify success to Slack
+                slackSend channel: '#big-data', color: 'good', message: "Build SUCCESSFUL: ${env.JOB_NAME} [${env.BUILD_NUMBER}] (${env.BUILD_URL})"
+            }
+        }
+        failure {
+            script {
+                // Notify failure to Slack
+                slackSend channel: '#big-data', color: 'danger', message: "Build FAILED: ${env.JOB_NAME} [${env.BUILD_NUMBER}] (${env.BUILD_URL})"
+            }
+        }
+        always {
+            script {
+                // Stop and remove containers after the job
+                sh 'docker-compose down'
+            }
+        }
+    }
+}
+
+----------------------------------------------
+> Run the pipeline manually for the first time
+
+#########################################################################################
+
+---** Troubleshooting **---
+
+For issues related to docker-compose
+
+$ docker-compose down --volumes
+
+$ docker system prune -a --volumes
+
